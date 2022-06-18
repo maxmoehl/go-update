@@ -97,7 +97,7 @@ func update() error {
 
 		err = updateBin(filepath.Join(binDir, entry.Name()))
 		if err != nil && printWarnings {
-			warn(fmt.Sprintf("skipping '%s': %s\n", entry.Name(), err.Error()))
+			warn(fmt.Sprintf("skipping '%s': %s", entry.Name(), err.Error()))
 		}
 	}
 
