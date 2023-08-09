@@ -1,13 +1,19 @@
+//go:build unix
+
 package main
 
 import (
 	"debug/buildinfo"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -25,7 +31,7 @@ const (
 var (
 	client = http.DefaultClient
 
-	printWarnings = false
+	logLevel = &slog.LevelVar{}
 
 	// preserveSettings contains all keys from the build info that should be
 	// carried over when generating the install-commands.
@@ -38,10 +44,13 @@ var (
 	minGoVersion = "go1.18"
 
 	// goProxies contains the parsed list of the GOPROXY environment variable.
-	// It honors the definition at https://go.dev/ref/mod#environment-variables
+	// It honors the definition at
+	// https://go.dev/ref/mod#environment-variables.
 	goProxies = []string{"https://proxy.golang.org", "direct"}
 
 	goBin string
+
+	goCli string
 )
 
 type info struct {
@@ -75,14 +84,18 @@ func (b binary) updateCmd() string {
 	return fmt.Sprintf("go install %s@%s", b.installPath, b.targetVersion)
 }
 
+func (b binary) packageVersion() string {
+	return fmt.Sprintf("%s@%s", b.installPath, b.targetVersion)
+}
+
 type binaries []binary
 
 func (bs binaries) String() string {
 	packageColumnLen := 0
 	versionColumnLen := 0
 	for _, b := range bs {
-		if len(b.pkg) > packageColumnLen {
-			packageColumnLen = len(b.pkg)
+		if len(b.installPath) > packageColumnLen {
+			packageColumnLen = len(b.installPath)
 		}
 		version := b.versionBump()
 		if len(version) > versionColumnLen {
@@ -92,8 +105,8 @@ func (bs binaries) String() string {
 
 	builder := strings.Builder{}
 	for _, b := range bs {
-		builder.WriteString(b.pkg)
-		builder.WriteString(strings.Repeat(" ", packageColumnLen-len(b.pkg)+1))
+		builder.WriteString(b.installPath)
+		builder.WriteString(strings.Repeat(" ", packageColumnLen-len(b.installPath)+1))
 		version := b.versionBump()
 		builder.WriteString(version)
 		if b.needsBump() {
@@ -110,12 +123,29 @@ func init() {
 	var err error
 	defer func() {
 		if err != nil {
-			fmt.Printf("error: %s\n", err.Error())
+			fmt.Printf("error: init: %s", err.Error())
 			os.Exit(1) // exit code 1: error during init
+		} else {
+			slog.Debug("init done",
+				goBinEnv, goBin,
+				goMinVersionEnv, minGoVersion,
+				"GOCLI", goCli,
+				goProxyEnv, goProxies,
+			)
 		}
 	}()
 
-	_, printWarnings = os.LookupEnv("PRINT_WARNINGS")
+	logLevelEnv, ok := os.LookupEnv("LOG")
+	if ok {
+		err = logLevel.UnmarshalText([]byte(logLevelEnv))
+		if err != nil {
+			return
+		}
+	} else {
+		logLevel.Set(slog.LevelError)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel})))
+
 	customMinGoVersion, ok := os.LookupEnv(goMinVersionEnv)
 	if ok {
 		minGoVersion = customMinGoVersion
@@ -133,11 +163,11 @@ func init() {
 
 	fileInfo, err := os.Stat(goBin)
 	if err != nil {
-		err = fmt.Errorf("unable to stat GOBIN (%s): %s", goBin, err.Error())
+		err = fmt.Errorf("stat $GOBIN (%s): %s", goBin, err.Error())
 		return
 	}
 	if !fileInfo.IsDir() {
-		err = fmt.Errorf("error: init: GOBIN (%s) is not a directory", goBin)
+		err = fmt.Errorf("$GOBIN (%s) is not a directory", goBin)
 		return
 	}
 
@@ -145,34 +175,45 @@ func init() {
 	if ok {
 		goProxies = strings.Split(proxy, ",")
 	}
+
+	goCli, err = exec.LookPath("go")
+	if err != nil {
+		err = fmt.Errorf("looking up go cli path: %w", err)
+	}
 }
 
-func main() {
-	var err error
-	defer func() {
-		if err != nil {
-			fmt.Printf("error: %s\n", err.Error())
-			os.Exit(2) // exit code 2: generic error during execution
-		}
-	}()
+type usageError error
 
+var usageErr usageError
+
+func main() {
+	err := Main()
+	if err != nil {
+		if errors.As(err, &usageErr) {
+			fmt.Printf("Usage: %s [ update (default) | list ]\n", os.Args[0])
+		}
+		fmt.Printf("error: main: %s\n", err.Error())
+		os.Exit(2) // exit code 2: generic error during execution
+	}
+}
+
+func Main() error {
 	if len(os.Args) > 2 {
-		err = fmt.Errorf("error: only one argument can be provided")
-		return
+		return usageError(fmt.Errorf("error: only one argument can be provided"))
 	}
 
-	fmt.Printf("using %s\n", goBin)
-
-	if len(os.Args) < 2 || os.Args[1] == updateCmd {
-		err = update(goBin)
-	} else if os.Args[1] == listCmd {
+	switch {
+	case len(os.Args) < 2 || os.Args[1] == updateCmd:
+		return update(goBin)
+	case os.Args[1] == listCmd:
 		bs, err := list(goBin)
 		if err != nil {
-			return
+			return err
 		}
 		fmt.Printf(bs.String())
-	} else {
-		err = fmt.Errorf("unknown command '%s'", os.Args[1])
+		return nil
+	default:
+		return usageError(fmt.Errorf("unknown command '%s'", os.Args[1]))
 	}
 }
 
@@ -183,12 +224,29 @@ func update(binDir string) error {
 	}
 
 	for _, b := range bs {
-		if b.needsBump() {
-			fmt.Println(b.updateCmd())
+		if !b.needsBump() {
+			continue
+		}
+		err = execUpdate(b.packageVersion())
+		if err != nil {
+			return fmt.Errorf("update: %s: %w", b.installPath, err)
 		}
 	}
 
 	return nil
+}
+
+func execUpdate(pkg string) error {
+	cmd := exec.Cmd{
+		Path:   goCli,
+		Args:   []string{"go", "install", pkg},
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+	}
+
+	slog.Debug("executing command", "cmd", cmd.String())
+
+	return cmd.Run()
 }
 
 func list(binDir string) (binaries, error) {
@@ -200,7 +258,7 @@ func list(binDir string) (binaries, error) {
 	var bs binaries
 	for _, entry := range entries {
 		if entry.IsDir() {
-			warn(fmt.Sprintf("skipping directory '%s'", entry.Name()))
+			slog.Warn("skipping directory", "name", entry.Name())
 			continue
 		}
 
@@ -210,13 +268,13 @@ func list(binDir string) (binaries, error) {
 		}
 
 		if !executable(fileInfo.Mode()) {
-			warn(fmt.Sprintf("skipping non-executable file '%s'", entry.Name()))
+			slog.Warn("skipping non-executable file", "name", entry.Name())
 			continue
 		}
 
 		b, err := inspectBinary(filepath.Join(binDir, entry.Name()))
 		if err != nil {
-			warn(fmt.Sprintf("skipping '%s': %s", entry.Name(), err.Error()))
+			slog.Warn("unable to inspect binary, skipping", "name", entry.Name(), "error", err.Error())
 			continue
 		}
 
@@ -242,7 +300,7 @@ func inspectBinary(path string) (binary, error) {
 
 	var args []string
 	for _, setting := range info.Settings {
-		if in(setting.Key, preserveSettings) {
+		if slices.Contains(preserveSettings, setting.Key) {
 			args = append(args, fmt.Sprintf("%s=%s", setting.Key, setting.Value))
 		}
 	}
@@ -260,6 +318,7 @@ func inspectBinary(path string) (binary, error) {
 
 // latest returns the latest version according to the GOPROXY.
 func latest(module string) (string, error) {
+	// TODO: walk all possible proxies, not just the default one hard-coded.
 	latestUrl := fmt.Sprintf("https://proxy.golang.org/%s/@latest", module)
 	res, err := client.Get(latestUrl)
 	if err != nil {
@@ -275,21 +334,6 @@ func latest(module string) (string, error) {
 	return latestVersion.Version, nil
 }
 
-func warn(msg string) {
-	if printWarnings {
-		fmt.Printf("warning: %s\n", msg)
-	}
-}
-
 func executable(mode os.FileMode) bool {
 	return mode&0111 != 0
-}
-
-func in[T comparable](v T, s []T) bool {
-	for _, t := range s {
-		if t == v {
-			return true
-		}
-	}
-	return false
 }
