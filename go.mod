@@ -1,3 +1,3 @@
-module github.com/maxmoehl/go-update
+module moehl.dev/go-update
 
 go 1.21.0
