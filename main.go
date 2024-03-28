@@ -22,6 +22,8 @@ const (
 	goMinVersionEnv = "GOMINVERSION"
 	homeEnv         = "HOME"
 
+	ignorePath = ".goupdateignore"
+
 	logErrorKey = "error"
 )
 
@@ -44,6 +46,9 @@ var (
 	goBin string
 
 	goCli string
+
+	excludePatterns []string
+	includePatterns []string
 )
 
 type usageError error
@@ -108,6 +113,12 @@ func init() {
 	goCli, err = exec.LookPath("go")
 	if err != nil {
 		err = fmt.Errorf("looking up go cli path: %w", err)
+		return
+	}
+
+	excludePatterns, includePatterns, err = ignoreFile(filepath.Join(goBin, ignorePath))
+	if err != nil {
+		err = fmt.Errorf("load ignore file: %w", err)
 	}
 }
 
@@ -148,6 +159,11 @@ func Main() error {
 	for _, entry := range entries {
 		executablePath := filepath.Join(goBin, entry.Name())
 		log := slog.With("path", executablePath)
+
+		if ignore(excludePatterns, includePatterns, entry.Name()) {
+			log.Debug("ignoring file")
+			continue
+		}
 
 		if entry.IsDir() {
 			log.Info("skipping directory", "name", entry.Name())
