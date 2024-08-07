@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +15,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Artefact interface {
@@ -57,14 +60,18 @@ type binary struct {
 }
 
 func newBinary(bi debug.BuildInfo) (Artefact, error) {
+	// See https://go.dev/ref/mod#goproxy-protocol for the protocol.
 	// TODO: walk all possible proxies, not just the default one hard-coded.
-	latestUrl := fmt.Sprintf("https://proxy.golang.org/%s/@latest", bi.Main.Path)
+	latestUrl := fmt.Sprintf("https://proxy.golang.org/%s/@latest", escapeModuleName(bi.Main.Path))
+	slog.Debug("making request", "method", http.MethodGet, "url", latestUrl)
 	res, err := client.Get(latestUrl)
 	if err != nil {
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("get latest version: got %s", res.Status)
+		// We don't expect very long error messages
+		errMsg, _ := io.ReadAll(io.LimitReader(res.Body, 512))
+		return nil, fmt.Errorf("get latest version: got %s: %s", res.Status, errMsg)
 	}
 
 	var latestVersion struct {
@@ -88,6 +95,24 @@ func (b *binary) InstalledVersion() string { return b.Main.Version }
 func (b *binary) TargetVersion() string    { return b.targetVersion }
 func (b *binary) NeedsUpdate() bool        { return b.targetVersion != b.InstalledVersion() }
 func (b *binary) Update() error            { return install(b.InstallPath(), b.TargetVersion()) }
+
+// escapeModuleName to prepare the string for usage in accordance with the go module proxy protocol.
+// See: https://go.dev/ref/mod#goproxy-protocol
+func escapeModuleName(in string) string {
+	buf := bytes.NewBuffer(make([]byte, 0, len(in)))
+
+	for _, r := range in {
+		if unicode.IsUpper(r) {
+			buf.WriteRune('!')
+			buf.WriteRune(unicode.ToLower(r))
+		} else {
+			buf.WriteRune(r)
+
+		}
+	}
+
+	return buf.String()
+}
 
 type goToolchain struct {
 	executablePath   string
