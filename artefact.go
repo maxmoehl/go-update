@@ -1,21 +1,17 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
-	"net/http"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
-	"time"
-	"unicode"
+
+	"moehl.dev/go-update/internal"
 )
 
 type Artefact interface {
@@ -60,32 +56,18 @@ type binary struct {
 }
 
 func newBinary(bi debug.BuildInfo) (Artefact, error) {
-	// See https://go.dev/ref/mod#goproxy-protocol for the protocol.
-	// TODO: walk all possible proxies, not just the default one hard-coded.
-	latestUrl := fmt.Sprintf("https://proxy.golang.org/%s/@latest", escapeModuleName(bi.Main.Path))
-	slog.Debug("making request", "method", http.MethodGet, "url", latestUrl)
-	res, err := client.Get(latestUrl)
+	versions, err := internal.ListVersions(bi.Main.Path)
 	if err != nil {
 		return nil, err
-	}
-	if res.StatusCode != http.StatusOK {
-		// We don't expect very long error messages
-		errMsg, _ := io.ReadAll(io.LimitReader(res.Body, 512))
-		return nil, fmt.Errorf("get latest version: got %s: %s", res.Status, errMsg)
 	}
 
-	var latestVersion struct {
-		Version string
-		Time    time.Time
-	}
-	err = json.NewDecoder(res.Body).Decode(&latestVersion)
-	if err != nil {
-		return nil, err
+	if len(versions) == 0 {
+		return nil, fmt.Errorf("go list did not return any version")
 	}
 
 	return &binary{
 		BuildInfo:     bi,
-		targetVersion: latestVersion.Version,
+		targetVersion: versions[len(versions)-1],
 	}, nil
 }
 
@@ -94,25 +76,7 @@ func (b *binary) InstallPath() string      { return b.Path }
 func (b *binary) InstalledVersion() string { return b.Main.Version }
 func (b *binary) TargetVersion() string    { return b.targetVersion }
 func (b *binary) NeedsUpdate() bool        { return b.targetVersion != b.InstalledVersion() }
-func (b *binary) Update() error            { return install(b.InstallPath(), b.TargetVersion()) }
-
-// escapeModuleName to prepare the string for usage in accordance with the go module proxy protocol.
-// See: https://go.dev/ref/mod#goproxy-protocol
-func escapeModuleName(in string) string {
-	buf := bytes.NewBuffer(make([]byte, 0, len(in)))
-
-	for _, r := range in {
-		if unicode.IsUpper(r) {
-			buf.WriteRune('!')
-			buf.WriteRune(unicode.ToLower(r))
-		} else {
-			buf.WriteRune(r)
-
-		}
-	}
-
-	return buf.String()
-}
+func (b *binary) Update() error            { return internal.Install(b.InstallPath(), b.TargetVersion()) }
 
 type goToolchain struct {
 	executablePath   string
@@ -152,7 +116,7 @@ func (b *goToolchain) TargetVersion() string    { return b.targetVersion }
 func (b *goToolchain) NeedsUpdate() bool        { return b.TargetVersion() != b.InstalledVersion() }
 
 func (b *goToolchain) Update() error {
-	err := install(b.InstallPath(), "latest")
+	err := internal.Install(b.InstallPath(), "latest")
 	if err != nil {
 		return err
 	}

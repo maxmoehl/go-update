@@ -13,18 +13,17 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"moehl.dev/go-update/internal"
 )
 
 const (
 	goBinEnv        = "GOBIN"
 	goPathEnv       = "GOPATH"
-	goProxyEnv      = "GOPROXY"
 	goMinVersionEnv = "GOMINVERSION"
 	homeEnv         = "HOME"
 
 	ignorePath = ".goupdateignore"
-
-	logErrorKey = "error"
 )
 
 var (
@@ -64,7 +63,6 @@ func init() {
 				goBinEnv, goBin,
 				goMinVersionEnv, minGoVersion,
 				"GOCLI", goCli,
-				goProxyEnv, goProxies,
 			)
 		}
 	}()
@@ -103,11 +101,6 @@ func init() {
 	if !fileInfo.IsDir() {
 		err = fmt.Errorf("$GOBIN (%s) is not a directory", goBin)
 		return
-	}
-
-	proxy, ok := os.LookupEnv(goProxyEnv)
-	if ok {
-		goProxies = strings.Split(proxy, ",")
 	}
 
 	goCli, err = exec.LookPath("go")
@@ -172,7 +165,7 @@ func Main() error {
 
 		fileInfo, err := entry.Info()
 		if err != nil {
-			log.Error("reading file info failed", logErrorKey, err)
+			log.Error("reading file info failed", internal.AttrErr(err))
 			continue
 		}
 
@@ -185,9 +178,27 @@ func Main() error {
 			continue
 		}
 
-		info, err := buildinfo.ReadFile(executablePath)
+		execFile, err := os.Open(executablePath)
 		if err != nil {
-			log.Error("reading build info failed", logErrorKey, err)
+			log.Error("unable to open executable", internal.AttrErr(err))
+			continue
+		}
+
+		magic := make([]byte, 2)
+		_, err = execFile.ReadAt(magic, 0)
+		if err != nil {
+			log.Error("unable to read magic bytes from executable", internal.AttrErr(err))
+			continue
+		}
+
+		if string(magic) == "#!" {
+			log.Info("skipping shell script with shebang")
+			continue
+		}
+
+		info, err := buildinfo.Read(execFile)
+		if err != nil {
+			log.Error("reading build info failed", internal.AttrErr(err))
 			continue
 		}
 		if info.GoVersion < minGoVersion {
@@ -197,12 +208,13 @@ func Main() error {
 
 		a, err := NewArtefact(info)
 		if err != nil {
-			log.Error("loading artefact failed", logErrorKey, err)
+			log.Error("loading artefact failed", internal.AttrErr(err))
 			continue
 		}
 		artefacts = append(artefacts, a)
 
-		log.Info("loaded artefact", "installed-version", a.InstalledVersion(),
+		log.Info("loaded artefact",
+			"installed-version", a.InstalledVersion(),
 			"target-version", a.TargetVersion())
 
 		if list || !a.NeedsUpdate() {
@@ -211,7 +223,7 @@ func Main() error {
 
 		err = a.Update()
 		if err != nil {
-			log.Error("installing target version failed", logErrorKey, err)
+			log.Error("installing target version failed", internal.AttrErr(err))
 			continue
 		}
 
@@ -223,27 +235,6 @@ func Main() error {
 	}
 
 	return nil
-}
-
-func install(pkg string, version string) error {
-	args := []string{"go", "install"}
-	if logLevel.Level() <= slog.LevelInfo {
-		args = append(args, "-v")
-	}
-	if logLevel.Level() <= slog.LevelDebug {
-		args = append(args, "-x")
-	}
-	args = append(args, fmt.Sprintf("%s@%s", pkg, version))
-	cmd := exec.Cmd{
-		Path:   goCli,
-		Args:   args,
-		Stdout: os.Stdout,
-		Stderr: os.Stderr,
-	}
-
-	slog.Debug("executing command", "cmd", cmd.String())
-
-	return cmd.Run()
 }
 
 func executable(mode os.FileMode) bool {
