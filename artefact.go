@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path"
@@ -62,7 +63,11 @@ func newBinary(bi debug.BuildInfo) (Artefact, error) {
 	}
 
 	if len(versions) == 0 {
-		return nil, fmt.Errorf("go list did not return any version")
+		slog.Warn("go list did not return any version, using 'latest'", "module", bi.Main.Path)
+		return &binary{
+			BuildInfo:     bi,
+			targetVersion: "latest",
+		}, nil
 	}
 
 	return &binary{
