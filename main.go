@@ -74,7 +74,7 @@ func init() {
 			return
 		}
 	} else {
-		logLevel.Set(slog.LevelError)
+		logLevel.Set(slog.LevelInfo)
 	}
 	slog.SetDefault(slog.New(newConsoleHandler(os.Stderr, logLevel)))
 
@@ -159,7 +159,7 @@ func Main() error {
 		}
 
 		if entry.IsDir() {
-			log.Info("skipping directory", "name", entry.Name())
+			log.Debug("skipping directory", "name", entry.Name())
 			continue
 		}
 
@@ -170,11 +170,11 @@ func Main() error {
 		}
 
 		if !executable(fileInfo.Mode()) {
-			log.Info("skipping non-executable file")
+			log.Debug("skipping non-executable file")
 			continue
 		}
 		if !fileInfo.Mode().Type().IsRegular() {
-			log.Info("skipping non-regular file")
+			log.Debug("skipping non-regular file")
 			continue
 		}
 
@@ -192,7 +192,7 @@ func Main() error {
 		}
 
 		if string(magic) == "#!" {
-			log.Info("skipping shell script with shebang")
+			log.Debug("skipping shell script with shebang")
 			continue
 		}
 
@@ -213,7 +213,7 @@ func Main() error {
 		}
 		artefacts = append(artefacts, a)
 
-		log.Info("loaded artefact",
+		log.Debug("loaded artefact",
 			"installed-version", a.InstalledVersion(),
 			"target-version", a.TargetVersion())
 
@@ -227,7 +227,9 @@ func Main() error {
 			continue
 		}
 
-		log.Info("updated artefact")
+		log.Info("updated artefact",
+			"installed-version", a.InstalledVersion(),
+			"target-version", a.TargetVersion())
 	}
 
 	if list {
