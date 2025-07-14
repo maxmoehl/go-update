@@ -1,3 +1,3 @@
-module moehl.dev/go-update
+module go.moehl.dev/go-update
 
 go 1.21.0
