@@ -14,7 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"moehl.dev/go-update/internal"
+	"go.moehl.dev/go-update/internal"
 )
 
 const (

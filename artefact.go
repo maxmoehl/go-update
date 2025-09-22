@@ -12,7 +12,7 @@ import (
 	"runtime/debug"
 	"strings"
 
-	"moehl.dev/go-update/internal"
+	"go.moehl.dev/go-update/internal"
 )
 
 type Artefact interface {
