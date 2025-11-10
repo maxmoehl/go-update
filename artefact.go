@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"go.moehl.dev/go-update/internal"
+
+	"golang.org/x/mod/semver"
 )
 
 type Artefact interface {
@@ -70,9 +72,23 @@ func newBinary(bi debug.BuildInfo) (Artefact, error) {
 		}, nil
 	}
 
+	// Select the most recent valid, non-prerelease version.
+	var v string
+	for i := len(versions) - 1; i >= 0; i-- {
+		v = versions[i]
+
+		if !semver.IsValid(v) {
+			continue
+		} else if semver.Prerelease(v) != "" {
+			continue
+		} else {
+			break
+		}
+	}
+
 	return &binary{
 		BuildInfo:     bi,
-		targetVersion: versions[len(versions)-1],
+		targetVersion: v,
 	}, nil
 }
 
